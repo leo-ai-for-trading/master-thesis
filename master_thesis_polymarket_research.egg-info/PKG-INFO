@@ -1,0 +1,88 @@
+Metadata-Version: 2.4
+Name: master-thesis-polymarket-research
+Version: 0.1.0
+Summary: Read-only Polymarket BTC 5-minute quote collector for research
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: httpx<1.0,>=0.27
+Requires-Dist: typer<1.0,>=0.12
+Requires-Dist: websockets<16,>=12
+Provides-Extra: dev
+Requires-Dist: pytest<9,>=8; extra == "dev"
+
+# Master Thesis Polymarket Quote Collector
+
+Read-only Python 3.11+ research package for continuously collecting live Polymarket BTC 5-minute Up/Down quotes. It uses raw HTTP via `httpx` and an optional public market WebSocket trigger path. No wallet authentication is required and no orders are placed.
+
+## What It Does
+
+- Resolves the current BTC 5-minute market from CLOB server time.
+- Falls back across current, previous, and next slugs.
+- Fetches YES and NO token books, midpoint, spread, best bid, and best ask.
+- Logs one JSON line per snapshot to `data/quotes_YYYYMMDD.jsonl`.
+- Appends flattened rows to `data/quotes_YYYYMMDD.csv`.
+- Computes rolling research features and placeholder mean-field state.
+
+## Setup
+
+```bash
+cd /Users/attiliopittelli/Desktop/Coding/master_thesis
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e '.[dev]'
+```
+
+## Commands
+
+```bash
+python -m app.main inspect-current
+python -m app.main once
+python -m app.main stream
+python -m app.main stream --poll-interval 0.25
+python -m app.main stream --use-ws
+```
+
+The default collection path is polling because it is easier to validate. When `--use-ws` or `USE_WS=true` is set, the service attempts to subscribe to the public market WebSocket and uses incoming updates as a trigger. If that setup fails, it automatically falls back to polling.
+
+## Environment Overrides
+
+```bash
+export BASE_SLUG_PREFIX=btc-updown-5m
+export WINDOW_SECONDS=300
+export POLL_INTERVAL_SECONDS=0.5
+export SERVER_TIME_REFRESH_SECONDS=3.0
+export USE_WS=false
+```
+
+## Sample Output
+
+`inspect-current` prints a compact live summary:
+
+```text
+Server time UTC: 2026-04-20 18:12:04+00:00
+Current window start UTC: 2026-04-20 18:10:00+00:00
+Current window end UTC: 2026-04-20 18:15:00+00:00
+Resolved slug: btc-updown-5m-1776708600
+Condition id: 0x...
+YES token (Up): 2594...
+NO token (Down): 4092...
+Top of book YES: bid=0.28 ask=0.29 bid_size_1=146.79 ask_size_1=260.0
+Top of book NO: bid=0.71 ask=0.72 bid_size_1=260.0 ask_size_1=146.79
+Midpoint YES: 0.285
+Midpoint NO: 0.715
+Seconds remaining: 176.421
+```
+
+`once` writes two records, one for YES and one for NO. A JSONL line looks like:
+
+```json
+{"ts_local":"2026-04-20T18:12:04.891234+00:00","ts_server":"2026-04-20T18:12:04.432100+00:00","slug":"btc-updown-5m-1776708600","condition_id":"0x...","token_id":"2594...","outcome":"YES","best_bid":0.28,"best_ask":0.29,"midpoint":0.285,"spread":0.01,"last_trade_price_if_present":0.51,"displayed_price":0.285,"bid_size_1":146.79,"ask_size_1":260.0,"raw_book_hash_if_present":"17ab56..."}
+```
+
+## Research Notes
+
+- This package is strictly for read-only data collection and research.
+- It uses timezone-aware UTC datetimes internally.
+- `displayed_price` follows Polymarket’s midpoint-versus-last-trade rule.
+- The NO-side last trade is inferred as `1 - YES lastTradePrice` when Gamma only exposes a single market-level last-trade value for the binary market.
