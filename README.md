@@ -6,7 +6,9 @@ Read-only Python 3.11+ research package for continuously collecting live Polymar
 
 - Resolves the current BTC 5-minute market from CLOB server time.
 - Falls back across current, previous, and next slugs.
-- Fetches YES and NO token books, midpoint, spread, best bid, and best ask.
+- Fetches YES and NO token books and derives best bid, best ask, midpoint, and spread from those books.
+- Logs raw Polymarket `/book` responses with full `bids` and `asks` arrays to `data/order_books_YYYYMMDD.jsonl`.
+- Appends raw order book rows to `data/order_books_YYYYMMDD.csv`.
 - Logs one JSON line per snapshot to `data/quotes_YYYYMMDD.jsonl`.
 - Appends flattened rows to `data/quotes_YYYYMMDD.csv`.
 - Computes rolling research features and placeholder mean-field state.
@@ -114,11 +116,13 @@ Midpoint NO: 0.715
 Seconds remaining: 176.421
 ```
 
-`once` writes two records, one for YES and one for NO. A JSONL line looks like:
+`once` prints two raw Polymarket order book payloads, one for YES and one for NO. A JSONL line in `order_books_YYYYMMDD.jsonl` looks like:
 
 ```json
-{"ts_local":"2026-04-20T18:12:04.891234+00:00","ts_server":"2026-04-20T18:12:04.432100+00:00","slug":"btc-updown-5m-1776708600","condition_id":"0x...","token_id":"2594...","outcome":"YES","best_bid":0.28,"best_ask":0.29,"midpoint":0.285,"spread":0.01,"last_trade_price_if_present":0.51,"displayed_price":0.285,"bid_size_1":146.79,"ask_size_1":260.0,"raw_book_hash_if_present":"17ab56..."}
+{"market":"0x...","asset_id":"2594...","timestamp":"1776708724432","hash":"17ab56...","bids":[{"price":"0.28","size":"146.79"}],"asks":[{"price":"0.29","size":"260.0"}],"min_order_size":"1","tick_size":"0.01","neg_risk":false,"last_trade_price":"0.51"}
 ```
+
+The normalized research view is still written separately to `quotes_YYYYMMDD.jsonl` and `quotes_YYYYMMDD.csv` for the feature engine, paper market-maker, and RL pipeline.
 
 ## Research Notes
 

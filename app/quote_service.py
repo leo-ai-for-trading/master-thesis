@@ -15,7 +15,13 @@ import websockets
 from app.config import Settings
 from app.feature_engineering import FeatureEngine
 from app.market_resolver import resolve_current_market
-from app.models import FeatureRow, MeanFieldState, MarketState, QuoteSnapshot, ResolvedMarket
+from app.models import (
+    FeatureRow,
+    MeanFieldState,
+    MarketState,
+    QuoteSnapshot,
+    ResolvedMarket,
+)
 from app.polymarket_client import PolymarketClient
 from app.time_utils import (
     build_market_slug,
@@ -34,6 +40,12 @@ def _to_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _to_text(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    return str(value)
 
 
 def _displayed_price(
@@ -71,6 +83,15 @@ def _best_level(
     return price, size
 
 
+def _book_timestamp_to_utc(raw_timestamp: Any) -> datetime | None:
+    timestamp = _to_float(raw_timestamp)
+    if timestamp is None:
+        return None
+    if timestamp >= 1_000_000_000_000:
+        timestamp /= 1000.0
+    return epoch_seconds_to_utc(timestamp)
+
+
 def normalize_quote_snapshot(
     *,
     market: ResolvedMarket,
@@ -79,35 +100,18 @@ def normalize_quote_snapshot(
     ts_local: datetime,
     ts_server: datetime,
     book: dict[str, Any],
-    midpoint_payload: dict[str, Any],
-    spread_payload: dict[str, Any],
-    best_buy_payload: dict[str, Any],
-    best_sell_payload: dict[str, Any],
     last_trade_price: float | None,
     source_mode: str,
 ) -> QuoteSnapshot:
-    book_bid_price, book_bid_size = _best_level(book.get("bids"), side="bid")
-    book_ask_price, book_ask_size = _best_level(book.get("asks"), side="ask")
+    best_bid, book_bid_size = _best_level(book.get("bids"), side="bid")
+    best_ask, book_ask_size = _best_level(book.get("asks"), side="ask")
+    midpoint = None
+    spread = None
+    book_timestamp = _book_timestamp_to_utc(book.get("timestamp"))
 
-    best_bid = _to_float(best_buy_payload.get("price"))
-    best_ask = _to_float(best_sell_payload.get("price"))
-    midpoint = _to_float(midpoint_payload.get("mid"))
-    spread = _to_float(spread_payload.get("spread"))
-    book_timestamp_raw = _to_float(book.get("timestamp"))
-    book_timestamp = (
-        epoch_seconds_to_utc(book_timestamp_raw / 1000.0)
-        if book_timestamp_raw is not None
-        else None
-    )
-
-    if best_bid is None:
-        best_bid = book_bid_price
-    if best_ask is None:
-        best_ask = book_ask_price
-    if midpoint is None and best_bid is not None and best_ask is not None:
-        midpoint = (best_bid + best_ask) / 2.0
-    if spread is None and best_bid is not None and best_ask is not None:
-        spread = best_ask - best_bid
+    if best_bid is not None and best_ask is not None:
+        midpoint = round((best_bid + best_ask) / 2.0, 10)
+        spread = round(best_ask - best_bid, 10)
 
     return QuoteSnapshot(
         ts_local=ts_local,
@@ -130,13 +134,35 @@ def normalize_quote_snapshot(
     )
 
 
+def _normalize_raw_levels(levels: list[dict[str, Any]] | None) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    for level in levels or []:
+        price = _to_text(level.get("price"))
+        size = _to_text(level.get("size"))
+        if price is None or size is None:
+            continue
+        normalized.append({"price": price, "size": size})
+    return normalized
+
+
+def normalize_order_book_payload(book: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "market": _to_text(book.get("market")),
+        "asset_id": _to_text(book.get("asset_id")),
+        "timestamp": _to_text(book.get("timestamp")),
+        "hash": _to_text(book.get("hash")),
+        "bids": _normalize_raw_levels(book.get("bids")),
+        "asks": _normalize_raw_levels(book.get("asks")),
+        "min_order_size": _to_text(book.get("min_order_size")),
+        "tick_size": _to_text(book.get("tick_size")),
+        "neg_risk": book.get("neg_risk") if isinstance(book.get("neg_risk"), bool) else None,
+        "last_trade_price": _to_text(book.get("last_trade_price")),
+    }
+
+
 @dataclass(slots=True)
 class RawTokenQuote:
     book: dict[str, Any]
-    midpoint: dict[str, Any]
-    spread: dict[str, Any]
-    best_buy: dict[str, Any]
-    best_sell: dict[str, Any]
 
 
 @dataclass(slots=True, frozen=True)
@@ -147,7 +173,8 @@ class CollectedQuoteBatch:
     features: FeatureRow
     market_state: MarketState
     mean_field_state: MeanFieldState
-    records: list[dict[str, Any]]
+    quote_records: list[dict[str, Any]]
+    raw_order_book_records: list[dict[str, Any]]
 
 
 class MarketWebSocketClient:
@@ -213,7 +240,7 @@ class QuoteService:
 
     async def collect_once(self, *, persist: bool = True, source_mode: str = "poll") -> list[dict[str, Any]]:
         batch = await self.collect_batch(persist=persist, source_mode=source_mode)
-        return batch.records
+        return batch.raw_order_book_records
 
     async def collect_batch(
         self,
@@ -360,10 +387,6 @@ class QuoteService:
             ts_local=ts_local,
             ts_server=ts_server,
             book=yes_raw.book,
-            midpoint_payload=yes_raw.midpoint,
-            spread_payload=yes_raw.spread,
-            best_buy_payload=yes_raw.best_buy,
-            best_sell_payload=yes_raw.best_sell,
             last_trade_price=market.last_trade_price_yes,
             source_mode=source_mode,
         )
@@ -374,10 +397,6 @@ class QuoteService:
             ts_local=ts_local,
             ts_server=ts_server,
             book=no_raw.book,
-            midpoint_payload=no_raw.midpoint,
-            spread_payload=no_raw.spread,
-            best_buy_payload=no_raw.best_buy,
-            best_sell_payload=no_raw.best_sell,
             last_trade_price=market.last_trade_price_no,
             source_mode=source_mode,
         )
@@ -388,7 +407,7 @@ class QuoteService:
             no_snapshot=no_snapshot,
             ts_server=ts_server,
         )
-        records = self._build_records(
+        quote_records = self._build_quote_records(
             market=market,
             yes_snapshot=yes_snapshot,
             no_snapshot=no_snapshot,
@@ -396,15 +415,25 @@ class QuoteService:
             market_state=market_state,
             mean_field_state=mean_field_state,
         )
+        raw_order_book_records = self._build_raw_order_book_records(
+            yes_book=yes_raw.book,
+            no_book=no_raw.book,
+        )
         if persist:
-            self._append_records(records)
+            self._append_records(quote_records, prefix="quotes")
+            self._append_records(
+                raw_order_book_records,
+                prefix="order_books",
+                date_key=ts_local.strftime("%Y%m%d"),
+            )
         self.logger.info(
             "collected quote snapshots",
             extra={
                 "slug": market.slug,
                 "condition_id": market.condition_id,
                 "source_mode": source_mode,
-                "rows": len(records),
+                "quote_rows": len(quote_records),
+                "order_book_rows": len(raw_order_book_records),
             },
         )
         return CollectedQuoteBatch(
@@ -414,24 +443,12 @@ class QuoteService:
             features=features,
             market_state=market_state,
             mean_field_state=mean_field_state,
-            records=records,
+            quote_records=quote_records,
+            raw_order_book_records=raw_order_book_records,
         )
 
     async def _fetch_token_quote(self, token_id: str) -> RawTokenQuote:
-        book, midpoint, spread, best_buy, best_sell = await asyncio.gather(
-            self.client.get_book(token_id),
-            self.client.get_midpoint(token_id),
-            self.client.get_spread(token_id),
-            self.client.get_best_price(token_id, "BUY"),
-            self.client.get_best_price(token_id, "SELL"),
-        )
-        return RawTokenQuote(
-            book=book,
-            midpoint=midpoint,
-            spread=spread,
-            best_buy=best_buy,
-            best_sell=best_sell,
-        )
+        return RawTokenQuote(book=await self.client.get_book(token_id))
 
     async def _ensure_market(self, *, force_server_refresh: bool) -> ResolvedMarket:
         server_ts = await self._refresh_server_time(force=force_server_refresh)
@@ -474,7 +491,7 @@ class QuoteService:
 
         return self._server_time_anchor + (now_monotonic - self._anchor_monotonic)
 
-    def _build_records(
+    def _build_quote_records(
         self,
         *,
         market: ResolvedMarket,
@@ -500,18 +517,35 @@ class QuoteService:
             no_snapshot.to_record(extra=extra),
         ]
 
-    def _append_records(self, records: list[dict[str, Any]]) -> None:
+    def _build_raw_order_book_records(
+        self,
+        *,
+        yes_book: dict[str, Any],
+        no_book: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        return [
+            normalize_order_book_payload(yes_book),
+            normalize_order_book_payload(no_book),
+        ]
+
+    def _append_records(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        prefix: str,
+        date_key: str | None = None,
+    ) -> None:
         if not records:
             return
         data_dir = self.settings.ensure_data_dir()
         grouped: dict[str, list[dict[str, Any]]] = {}
         for record in records:
-            date_key = str(record["ts_local"])[:10].replace("-", "")
-            grouped.setdefault(date_key, []).append(record)
+            current_date_key = date_key or str(record["ts_local"])[:10].replace("-", "")
+            grouped.setdefault(current_date_key, []).append(record)
 
         for date_key, day_records in grouped.items():
-            jsonl_path = data_dir / f"quotes_{date_key}.jsonl"
-            csv_path = data_dir / f"quotes_{date_key}.csv"
+            jsonl_path = data_dir / f"{prefix}_{date_key}.jsonl"
+            csv_path = data_dir / f"{prefix}_{date_key}.csv"
             with jsonl_path.open("a", encoding="utf-8") as jsonl_file:
                 for record in day_records:
                     jsonl_file.write(json.dumps(record, ensure_ascii=True) + "\n")
@@ -522,4 +556,14 @@ class QuoteService:
                 writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
                 if write_header:
                     writer.writeheader()
-                writer.writerows(day_records)
+                writer.writerows(self._csv_safe_record(record) for record in day_records)
+
+    @staticmethod
+    def _csv_safe_record(record: dict[str, Any]) -> dict[str, Any]:
+        safe_record: dict[str, Any] = {}
+        for key, value in record.items():
+            if isinstance(value, (list, dict)):
+                safe_record[key] = json.dumps(value, ensure_ascii=True)
+            else:
+                safe_record[key] = value
+        return safe_record
