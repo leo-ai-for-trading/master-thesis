@@ -1,3 +1,3 @@
-"""Read-only Polymarket research package."""
+"""Minimal Polymarket order book collector."""
 
 __version__ = "0.1.0"

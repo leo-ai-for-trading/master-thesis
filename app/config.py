@@ -9,13 +9,6 @@ from pathlib import Path
 from typing import Any
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _json_default(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.astimezone(timezone.utc).isoformat()
@@ -28,15 +21,14 @@ def _json_default(value: Any) -> Any:
 class Settings:
     gamma_base_url: str
     clob_base_url: str
-    ws_market_url: str
     base_slug_prefix: str
+    start_slug: str | None
     window_seconds: int
     poll_interval_seconds: float
     server_time_refresh_seconds: float
     http_timeout_seconds: float
     http_max_retries: int
     http_base_backoff_seconds: float
-    use_ws: bool
     data_dir: Path
     log_level: str
 
@@ -47,11 +39,8 @@ class Settings:
         return cls(
             gamma_base_url=os.getenv("GAMMA_BASE_URL", "https://gamma-api.polymarket.com"),
             clob_base_url=os.getenv("CLOB_BASE_URL", "https://clob.polymarket.com"),
-            ws_market_url=os.getenv(
-                "WS_MARKET_URL",
-                "wss://ws-subscriptions-clob.polymarket.com/ws/market",
-            ),
             base_slug_prefix=os.getenv("BASE_SLUG_PREFIX", "btc-updown-5m"),
+            start_slug=os.getenv("START_SLUG") or None,
             window_seconds=int(os.getenv("WINDOW_SECONDS", "300")),
             poll_interval_seconds=float(os.getenv("POLL_INTERVAL_SECONDS", "0.5")),
             server_time_refresh_seconds=float(
@@ -60,7 +49,6 @@ class Settings:
             http_timeout_seconds=float(os.getenv("HTTP_TIMEOUT_SECONDS", "10.0")),
             http_max_retries=int(os.getenv("HTTP_MAX_RETRIES", "4")),
             http_base_backoff_seconds=float(os.getenv("HTTP_BASE_BACKOFF_SECONDS", "0.35")),
-            use_ws=_env_bool("USE_WS", False),
             data_dir=data_dir,
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         )

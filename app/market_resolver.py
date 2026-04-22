@@ -180,3 +180,33 @@ async def resolve_current_market(
     raise MarketResolutionError(
         f"no market found for current/previous/next slugs around server_ts={server_ts}"
     )
+
+
+async def resolve_market_by_slug(
+    client: PolymarketClient,
+    settings: Settings,
+    *,
+    slug: str,
+    window_start: int,
+) -> ResolvedMarket:
+    market_payload = await client.get_market_by_slug(slug)
+    if market_payload is None:
+        raise MarketResolutionError(f"market not found for slug {slug}")
+
+    condition_id = str(market_payload.get("conditionId", "")).strip()
+    if not condition_id:
+        raise MarketResolutionError(f"market payload missing condition id for {slug}")
+
+    clob_market_payload = await client.get_clob_market(condition_id)
+    event_payload: dict[str, Any] | None = None
+    if not market_payload.get("question") and not market_payload.get("title"):
+        event_payload = await client.get_event_by_slug(slug)
+
+    return build_resolved_market(
+        slug=slug,
+        window_start=window_start,
+        window_seconds=settings.window_seconds,
+        market_payload=market_payload,
+        clob_market_payload=clob_market_payload,
+        event_payload=event_payload,
+    )

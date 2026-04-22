@@ -1,6 +1,0 @@
-httpx<1.0,>=0.27
-typer<1.0,>=0.12
-websockets<16,>=12
-
-[dev]
-pytest<9,>=8

@@ -23,6 +23,15 @@ def build_market_slug(base_slug_prefix: str, window_start: int) -> str:
     return f"{base_slug_prefix}-{window_start}"
 
 
+def parse_window_start_from_slug(slug: str, base_slug_prefix: str) -> int:
+    prefix = f"{base_slug_prefix}-"
+    if not slug.startswith(prefix):
+        raise ValueError(
+            f"slug {slug!r} does not start with expected prefix {prefix!r}"
+        )
+    return int(slug.removeprefix(prefix))
+
+
 def candidate_window_starts(server_ts: int | float, window_seconds: int = 300) -> list[int]:
     current = window_start_from_server_ts(server_ts, window_seconds=window_seconds)
     return [current, current - window_seconds, current + window_seconds]
